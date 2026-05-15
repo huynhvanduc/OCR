@@ -73,7 +73,7 @@ class Program
 
     static byte[] GenerateCaptcha(string code)
     {
-        int W = 200, H = 90;
+        int W = 210, H = 100;
 
         using var surface = SKSurface.Create(new SKImageInfo(W, H));
         var canvas = surface.Canvas;
@@ -123,7 +123,7 @@ class Program
             }
         }
 
-        // Vẽ từng chữ số
+        // Vẽ từng chữ số — nghiêng nhiều hơn + Y ngẫu nhiên (không thẳng hàng)
         using var textPaint = new SKPaint
         {
             IsAntialias = true,
@@ -137,19 +137,24 @@ class Program
         {
             // Màu tối đậm, tương phản cao
             textPaint.Color = new SKColor(
-                (byte)rnd.Next(0, 60),
-                (byte)rnd.Next(0, 60),
+                (byte)rnd.Next(0,  60),
+                (byte)rnd.Next(0,  60),
                 (byte)rnd.Next(100, 180));
 
-            float angle = rnd.Next(-12, 13);   // nghiêng nhẹ -12° ~ +12°
-            float posY  = rnd.Next(-5, 6);      // lên xuống ít
+            // Nghiêng nhiều hơn: -30° ~ +30°, đảm bảo không bị 0
+            int angle = rnd.Next(0, 2) == 0
+                ? rnd.Next(-30, -10)   // nghiêng trái
+                : rnd.Next(10, 31);    // nghiêng phải
+
+            // Vị trí Y ngẫu nhiên mạnh — không thẳng hàng
+            float baseY = 65f + rnd.Next(-18, 19);
 
             canvas.Save();
-            canvas.RotateDegrees(angle, posX + 20, H / 2f);
-            canvas.DrawText(ch.ToString(), posX, posY + 65, textPaint);
+            canvas.RotateDegrees(angle, posX + 22, H / 2f);
+            canvas.DrawText(ch.ToString(), posX, baseY, textPaint);
             canvas.Restore();
 
-            posX += rnd.Next(44, 54);           // sát nhau hơn (55~70 -> 44~54)
+            posX += rnd.Next(44, 56);
         }
 
         // Wave distortion nhẹ
