@@ -2,6 +2,9 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using Tesseract;
 
+// Alias để tránh conflict ImageFormat giữa System.Drawing.Imaging và Tesseract
+using SysImageFormat = System.Drawing.Imaging.ImageFormat;
+
 class Program
 {
     static async Task Main(string[] args)
@@ -92,7 +95,8 @@ class Program
             }
         }
 
-        result.Save(outputPath, ImageFormat.Png);
+        // Dùng alias SysImageFormat để tránh conflict với Tesseract.ImageFormat
+        result.Save(outputPath, SysImageFormat.Png);
     }
 
     /// <summary>
