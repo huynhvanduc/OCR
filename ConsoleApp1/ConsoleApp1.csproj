@@ -2,17 +2,15 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <!-- Nâng lên 22621 để khớp với Microsoft.Windows.SDK.Contracts 10.0.22621.2 -->
-    <TargetFramework>net8.0-windows10.0.22621.0</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Windows.Media.Ocr — built-in OCR engine của Windows, không cần tessdata -->
-    <PackageReference Include="Microsoft.Windows.SDK.Contracts" Version="10.0.22621.2" />
-    <!-- SkiaSharp để pre-process ảnh -->
+    <!-- IronOCR: wrapper thông minh, tự pre-process, không cần tessdata thủ công -->
+    <PackageReference Include="IronOcr" Version="2024.1.7" />
+    <!-- SkiaSharp: pre-process ảnh trước khi OCR -->
     <PackageReference Include="SkiaSharp" Version="2.88.7" />
   </ItemGroup>
 

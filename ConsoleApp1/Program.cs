@@ -1,35 +1,26 @@
-using System;
-using System.IO;
-using System.Linq;
-using System.Net.Http;
-using System.Threading.Tasks;
+using IronOcr;
 using SkiaSharp;
-using Windows.Graphics.Imaging;
-using Windows.Media.Ocr;
-using Windows.Storage;
-using Windows.Storage.Streams;
 
 class Program
 {
     static async Task Main(string[] args)
     {
-        string captchaUrl  = args.Length > 0 ? args[0] : "http://localhost:5000/captcha";
-        string outputPath  = "captcha.png";
+        string captchaUrl    = args.Length > 0 ? args[0] : "http://localhost:5000/captcha";
+        string outputPath    = "captcha.png";
         string processedPath = "captcha_processed.png";
 
         Console.WriteLine("============================================");
-        Console.WriteLine(" OCR CAPTCHA Client  (Windows.Media.Ocr)");
+        Console.WriteLine(" OCR CAPTCHA Client  (IronOCR)");
         Console.WriteLine("============================================");
         Console.WriteLine($"[INFO]  CAPTCHA URL   : {captchaUrl}");
 
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
-        // ── Step 1: Download CAPTCHA image ──────────────────────────────
+        // ── Step 1: Download CAPTCHA image ───────────────────────────────
         Console.WriteLine("[INFO]  Downloading CAPTCHA image...");
-        byte[] imageBytes;
         try
         {
-            imageBytes = await client.GetByteArrayAsync(captchaUrl);
+            byte[] imageBytes = await client.GetByteArrayAsync(captchaUrl);
             await File.WriteAllBytesAsync(outputPath, imageBytes);
             Console.WriteLine($"[OK]    Image saved     : {outputPath} ({imageBytes.Length} bytes)");
         }
@@ -40,21 +31,22 @@ class Program
             return;
         }
 
-        // ── Step 2: Pre-process — scale 3x + grayscale + sharpen ────────
+        // ── Step 2: Pre-process bằng SkiaSharp ───────────────────────────
+        // Scale 4x + grayscale + threshold → chữ đen nền trắng rõ ràng
         Console.WriteLine("[INFO]  Pre-processing image...");
         PreprocessImage(outputPath, processedPath);
         Console.WriteLine($"[OK]    Processed image : {processedPath}");
 
-        // ── Step 3: Run Windows.Media.Ocr ───────────────────────────────
-        Console.WriteLine("[INFO]  Running Windows OCR engine...");
-        string ocrResult = await RunWindowsOcrAsync(processedPath);
-        Console.WriteLine($"[OCR]   Raw result      : \"{ocrResult}\"");
+        // ── Step 3: Chạy IronOCR ─────────────────────────────────────────
+        Console.WriteLine("[INFO]  Running IronOCR engine...");
+        string rawResult = RunIronOcr(processedPath);
+        Console.WriteLine($"[OCR]   Raw result      : \"{rawResult}\"");
 
-        // ── Step 4: Post-process — digits only ──────────────────────────
-        string digits = new string(ocrResult.Where(char.IsDigit).ToArray());
+        // ── Step 4: Lọc chỉ lấy chữ số ──────────────────────────────────
+        string digits = new string(rawResult.Where(char.IsDigit).ToArray());
         Console.WriteLine($"[OCR]   Digits only     : \"{digits}\"");
 
-        // ── Step 5: Result ───────────────────────────────────────────────
+        // ── Step 5: Kết quả ──────────────────────────────────────────────
         Console.WriteLine(digits.Length == 3
             ? $"[RESULT] Detected CAPTCHA : {digits} ✓"
             : $"[RESULT] Detected CAPTCHA : \"{digits}\" (expected 3 digits, got {digits.Length})");
@@ -64,21 +56,18 @@ class Program
 
     /// <summary>
     /// Pre-process ảnh bằng SkiaSharp:
-    /// 1. Scale lên 4x
+    /// 1. Scale lên 4x — IronOCR đọc chính xác hơn với ảnh lớn
     /// 2. Grayscale
-    /// 3. Binary threshold (tách chữ khỏi nền)
-    /// 4. Invert nếu cần (chữ tối nền sáng)
+    /// 3. Binary threshold — chữ đen nền trắng rõ ràng
     /// </summary>
     static void PreprocessImage(string inputPath, string outputPath)
     {
         using var original = SKBitmap.Decode(inputPath);
 
-        // Scale 4x
         int newW = original.Width  * 4;
         int newH = original.Height * 4;
         using var scaled = original.Resize(new SKImageInfo(newW, newH), SKFilterQuality.High);
 
-        // Grayscale + threshold
         using var processed = new SKBitmap(newW, newH);
         for (int y = 0; y < newH; y++)
         {
@@ -86,10 +75,8 @@ class Program
             {
                 SKColor c    = scaled.GetPixel(x, y);
                 int    gray  = (int)(c.Red * 0.299 + c.Green * 0.587 + c.Blue * 0.114);
-
-                // Ngưỡng 150: pixel tối hơn → đen (chữ), sáng hơn → trắng (nền)
-                SKColor bw = gray < 150 ? SKColors.Black : SKColors.White;
-                processed.SetPixel(x, y, bw);
+                // Threshold 150: tối hơn → đen (chữ), sáng hơn → trắng (nền)
+                processed.SetPixel(x, y, gray < 150 ? SKColors.Black : SKColors.White);
             }
         }
 
@@ -99,49 +86,41 @@ class Program
     }
 
     /// <summary>
-    /// Dùng Windows.Media.Ocr — engine tích hợp Windows 10+
-    /// Thông minh hơn Tesseract, không cần cài thêm gì.
+    /// Chạy IronOCR với cấu hình tối ưu cho CAPTCHA số:
+    /// - Chỉ nhận ký tự 0-9
+    /// - Tắt auto-rotate, auto-deskew để không làm lệch thêm
+    /// - Scale = 1 (đã pre-process ở trên)
     /// </summary>
-    static async Task<string> RunWindowsOcrAsync(string imagePath)
+    static string RunIronOcr(string imagePath)
     {
         try
         {
-            // Load ảnh thành SoftwareBitmap
-            string fullPath = Path.GetFullPath(imagePath);
-            var file        = await StorageFile.GetFileFromPathAsync(fullPath);
+            var ocr = new IronTesseract();
 
-            SoftwareBitmap softBitmap;
-            using (var stream = await file.OpenAsync(FileAccessMode.Read))
-            {
-                var decoder = await BitmapDecoder.CreateAsync(stream);
-                softBitmap  = await decoder.GetSoftwareBitmapAsync(
-                    BitmapPixelFormat.Bgra8,
-                    BitmapAlphaMode.Premultiplied);
-            }
+            // Chỉ nhận chữ số
+            ocr.Configuration.WhiteListCharacters = "0123456789";
 
-            // Dùng ngôn ngữ English
-            var ocrEngine = OcrEngine.TryCreateFromLanguage(
-                new Windows.Globalization.Language("en-US"));
+            // Tắt các bước tự động có thể làm hỏng ảnh đã xử lý
+            ocr.Configuration.TesseractVersion       = TesseractVersion.Tesseract5;
+            ocr.Configuration.EngineMode             = TesseractEngineMode.LstmOnly;
+            ocr.Configuration.PageSegmentationMode   = TesseractPageSegmentationMode.SingleLine;
+            ocr.Configuration.ReadBarCodes           = false;
 
-            if (ocrEngine == null)
-            {
-                Console.WriteLine("[WARN]  English OCR language pack not found.");
-                Console.WriteLine("        Go to: Settings > Time & Language > Language > English > Options > Download");
-                return string.Empty;
-            }
+            using var input = new OcrInput();
+            input.LoadImage(imagePath);
 
-            var ocrResult = await ocrEngine.RecognizeAsync(softBitmap);
+            // IronOCR tự động enhance ảnh thêm một lần nữa
+            input.EnhanceResolution(300);
+            input.Deskew();
 
-            // Ghép tất cả các từ nhận được
-            string text = string.Join("", ocrResult.Lines
-                .SelectMany(l => l.Words)
-                .Select(w => w.Text));
+            var result = ocr.Read(input);
 
-            return text;
+            Console.WriteLine($"[OCR]   Confidence   : {result.Confidence:F1}%");
+            return result.Text.Trim();
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[ERROR] Windows OCR error: {ex.Message}");
+            Console.WriteLine($"[ERROR] IronOCR error: {ex.Message}");
             return string.Empty;
         }
     }
