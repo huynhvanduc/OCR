@@ -1,91 +1,130 @@
-using System.Net;
-using System.Text.Json;
+using System.Drawing;
+using System.Drawing.Imaging;
+using Tesseract;
 
 class Program
 {
     static async Task Main(string[] args)
     {
-        // URL of the CAPTCHA server (can be passed as argument)
-        string captchaUrl  = args.Length > 0 ? args[0] : "http://localhost:5000/captcha";
-        string answerUrl   = captchaUrl.Replace("/captcha", "/answer");
-        string outputPath  = "captcha.png";
+        string captchaUrl = args.Length > 0 ? args[0] : "http://localhost:5000/captcha";
+        string outputPath = "captcha.png";
+        string processedPath = "captcha_processed.png";
 
         Console.WriteLine("============================================");
         Console.WriteLine(" OCR CAPTCHA Client");
         Console.WriteLine("============================================");
-        Console.WriteLine($"[INFO]  CAPTCHA URL : {captchaUrl}");
+        Console.WriteLine($"[INFO]  CAPTCHA URL  : {captchaUrl}");
 
         using var client = new HttpClient();
         client.Timeout = TimeSpan.FromSeconds(10);
 
-        // ── Step 1: Download CAPTCHA image ────────────────────────────
+        // ── Step 1: Download CAPTCHA image ───────────────────────────────
         Console.WriteLine("[INFO]  Downloading CAPTCHA image...");
         byte[] imageBytes;
         try
         {
             imageBytes = await client.GetByteArrayAsync(captchaUrl);
             await File.WriteAllBytesAsync(outputPath, imageBytes);
-            Console.WriteLine($"[OK]    Image saved  : {outputPath} ({imageBytes.Length} bytes)");
+            Console.WriteLine($"[OK]    Image saved    : {outputPath} ({imageBytes.Length} bytes)");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[ERROR] Failed to download image: {ex.Message}");
+            Console.WriteLine($"[ERROR] Failed to download: {ex.Message}");
             Console.WriteLine("        Make sure GenerateCaptcha server is running at http://localhost:5000");
             return;
         }
 
-        // ── Step 2: Fetch ground-truth answer (for accuracy check) ────
-        string? groundTruth = null;
-        try
-        {
-            var json = await client.GetStringAsync(answerUrl);
-            groundTruth = JsonDocument.Parse(json).RootElement.GetProperty("code").GetString();
-            Console.WriteLine($"[INFO]  Ground truth : {groundTruth}");
-        }
-        catch
-        {
-            Console.WriteLine("[WARN]  Could not fetch ground truth answer (optional).");
-        }
+        // ── Step 2: Pre-process image (grayscale + threshold) ────────────
+        Console.WriteLine("[INFO]  Pre-processing image for OCR...");
+        PreprocessImage(outputPath, processedPath);
+        Console.WriteLine($"[OK]    Processed image: {processedPath}");
 
-        // ── Step 3: Run OCR ───────────────────────────────────────────
-        Console.WriteLine("[INFO]  Running OCR...");
-        string ocrResult = RunOcr(outputPath);
-        Console.WriteLine($"[OCR]   Raw result   : \"{ocrResult}\"");
+        // ── Step 3: Run OCR ──────────────────────────────────────────────
+        Console.WriteLine("[INFO]  Running Tesseract OCR...");
+        string rawResult = RunOcr(processedPath);
+        Console.WriteLine($"[OCR]   Raw result     : \"{rawResult}\"");
 
-        // ── Step 4: Post-process — keep digits only ───────────────────
-        string digits = new string(ocrResult.Where(char.IsDigit).ToArray());
-        Console.WriteLine($"[OCR]   Digits only  : \"{digits}\"");
+        // ── Step 4: Post-process — digits only ───────────────────────────
+        string digits = new string(rawResult.Where(char.IsDigit).ToArray());
+        Console.WriteLine($"[OCR]   Digits only    : \"{digits}\"");
 
-        // ── Step 5: Accuracy check ────────────────────────────────────
-        if (groundTruth != null)
-        {
-            bool correct = digits == groundTruth;
-            Console.WriteLine($"[RESULT] Match : {(correct ? "YES ✓" : "NO ✗")}  (OCR: \"{digits}\" | Truth: \"{groundTruth}\")");
-        }
+        // ── Step 5: Result ───────────────────────────────────────────────
+        if (digits.Length == 3)
+            Console.WriteLine($"[RESULT] Detected CAPTCHA: {digits} ✓");
+        else
+            Console.WriteLine($"[RESULT] Detected CAPTCHA: \"{digits}\" (expected 3 digits, got {digits.Length})");
 
         Console.WriteLine("============================================");
     }
 
+    /// <summary>
+    /// Pre-process ảnh để Tesseract dễ đọc hơn:
+    /// 1. Scale lên 3x (Tesseract cần ảnh đủ lớn)
+    /// 2. Grayscale
+    /// 3. Binary threshold (chuyển trắng/đen rõ ràng)
+    /// </summary>
+    static void PreprocessImage(string inputPath, string outputPath)
+    {
+        using var src = new Bitmap(inputPath);
+
+        // Scale lên 3x
+        int newW = src.Width  * 3;
+        int newH = src.Height * 3;
+        using var scaled = new Bitmap(newW, newH);
+        using (var g = Graphics.FromImage(scaled))
+        {
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            g.DrawImage(src, 0, 0, newW, newH);
+        }
+
+        // Grayscale + Binary threshold
+        using var result = new Bitmap(newW, newH);
+        for (int y = 0; y < newH; y++)
+        {
+            for (int x = 0; x < newW; x++)
+            {
+                Color pixel = scaled.GetPixel(x, y);
+                int gray = (int)(pixel.R * 0.299 + pixel.G * 0.587 + pixel.B * 0.114);
+
+                // Threshold: pixel tối hơn 140 → đen (chữ), còn lại → trắng (nền)
+                Color bw = gray < 140 ? Color.Black : Color.White;
+                result.SetPixel(x, y, bw);
+            }
+        }
+
+        result.Save(outputPath, ImageFormat.Png);
+    }
+
+    /// <summary>
+    /// Chạy Tesseract OCR — chế độ chỉ nhận chữ số
+    /// </summary>
     static string RunOcr(string imagePath)
     {
-        // Tesseract OCR — digits only mode
         try
         {
             string tessDataPath = Path.Combine(AppContext.BaseDirectory, "tessdata");
             if (!Directory.Exists(tessDataPath))
             {
-                Console.WriteLine("[WARN]  tessdata folder not found. Returning filename as placeholder.");
-                Console.WriteLine("        Download tessdata from: https://github.com/tesseract-ocr/tessdata");
-                Console.WriteLine($"        Place 'eng.traineddata' in: {tessDataPath}");
-                return "[tessdata missing]";
+                Console.WriteLine("[WARN]  tessdata folder not found!");
+                Console.WriteLine($"        Create folder and place 'eng.traineddata' in: {tessDataPath}");
+                Console.WriteLine("        Download: https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata");
+                return string.Empty;
             }
 
-            using var engine = new Tesseract.TesseractEngine(tessDataPath, "eng", Tesseract.EngineMode.Default);
-            engine.SetVariable("tessedit_char_whitelist", "0123456789"); // digits only
+            using var engine = new TesseractEngine(tessDataPath, "eng", EngineMode.LstmOnly);
 
-            using var img = Tesseract.Pix.LoadFromFile(imagePath);
-            using var page = engine.Process(img);
-            return page.GetText().Trim();
+            // Chỉ nhận các chữ số 0-9
+            engine.SetVariable("tessedit_char_whitelist", "0123456789");
+
+            // PSM_SINGLE_LINE: coi toàn bộ ảnh là 1 dòng text
+            using var img  = Pix.LoadFromFile(imagePath);
+            using var page = engine.Process(img, PageSegMode.SingleLine);
+
+            float confidence = page.GetMeanConfidence();
+            string text      = page.GetText().Trim();
+
+            Console.WriteLine($"[OCR]   Confidence   : {confidence:P0}");
+            return text;
         }
         catch (Exception ex)
         {
