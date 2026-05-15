@@ -2,12 +2,13 @@ using System;
 using System.IO;
 using System.Net;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using SkiaSharp;
 
 class Program
 {
-    static readonly Random rnd = new Random();
+    static readonly Random rnd = Random.Shared;
     static string lastCode = "";
 
     static async Task Main(string[] args)
@@ -21,7 +22,17 @@ class Program
         while (true)
         {
             var ctx = await listener.GetContextAsync();
-            _ = Task.Run(() => HandleRequest(ctx));
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    HandleRequest(ctx);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[ERROR] {ex.Message}");
+                }
+            });
         }
     }
 
@@ -34,7 +45,7 @@ class Program
             if (path == "/captcha")
             {
                 string code = rnd.Next(100, 1000).ToString();
-                lastCode = code;
+                Interlocked.Exchange(ref lastCode, code);
 
                 byte[] imgBytes = GenerateCaptcha(code);
                 ctx.Response.ContentType = "image/png";
@@ -44,7 +55,7 @@ class Program
             }
             else if (path == "/answer")
             {
-                string json = $"{{\"code\":\"{lastCode}\"}}";
+                string json = $"{{\"code\":\"{Volatile.Read(ref lastCode)}\"}}";
                 byte[] buf = Encoding.UTF8.GetBytes(json);
                 ctx.Response.ContentType = "application/json";
                 ctx.Response.ContentLength64 = buf.Length;
