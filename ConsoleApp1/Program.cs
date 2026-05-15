@@ -90,6 +90,7 @@ class Program
 
             // Lưu stats sau mỗi round để không mất dữ liệu
             SaveStats(stats);
+            Console.ReadKey();
         }
 
         // ── Tổng kết ─────────────────────────────────────────────────────

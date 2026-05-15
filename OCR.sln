@@ -5,6 +5,8 @@ VisualStudioVersion = 17.14.36121.58 d17.14
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConsoleApp1", "ConsoleApp1\ConsoleApp1.csproj", "{AB0DA739-D8A7-46F6-A206-FD88DB1EF907}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GenerateCaptcha", "GenerateCaptcha\GenerateCaptcha.csproj", "{B0EDBE55-4DD1-7A76-CFD9-A04728B27192}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -15,6 +17,10 @@ Global
 		{AB0DA739-D8A7-46F6-A206-FD88DB1EF907}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{AB0DA739-D8A7-46F6-A206-FD88DB1EF907}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{AB0DA739-D8A7-46F6-A206-FD88DB1EF907}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B0EDBE55-4DD1-7A76-CFD9-A04728B27192}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B0EDBE55-4DD1-7A76-CFD9-A04728B27192}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B0EDBE55-4DD1-7A76-CFD9-A04728B27192}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B0EDBE55-4DD1-7A76-CFD9-A04728B27192}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
