@@ -73,7 +73,7 @@ class Program
 
     static byte[] GenerateCaptcha(string code)
     {
-        int W = 210, H = 100;
+        int W = 180, H = 100;
 
         using var surface = SKSurface.Create(new SKImageInfo(W, H));
         var canvas = surface.Canvas;
@@ -84,17 +84,17 @@ class Program
         // Noise dots nhạt
         using (var dotPaint = new SKPaint { StrokeWidth = 1 })
         {
-            for (int i = 0; i < 200; i++)
+            for (int i = 0; i < 250; i++)
             {
                 dotPaint.Color = new SKColor(
-                    (byte)rnd.Next(180, 220),
-                    (byte)rnd.Next(180, 220),
-                    (byte)rnd.Next(180, 220));
+                    (byte)rnd.Next(170, 215),
+                    (byte)rnd.Next(170, 215),
+                    (byte)rnd.Next(170, 215));
                 canvas.DrawPoint(rnd.Next(W), rnd.Next(H), dotPaint);
             }
         }
 
-        // Đường nhiễu nhạt, mỏng
+        // Đường nhiễu cong đi ngang qua chữ
         using (var linePaint = new SKPaint
         {
             StrokeWidth = 1,
@@ -105,17 +105,17 @@ class Program
             for (int i = 0; i < 3; i++)
             {
                 linePaint.Color = new SKColor(
-                    (byte)rnd.Next(160, 200),
-                    (byte)rnd.Next(160, 200),
-                    (byte)rnd.Next(160, 200));
+                    (byte)rnd.Next(150, 195),
+                    (byte)rnd.Next(150, 195),
+                    (byte)rnd.Next(150, 195));
 
                 var path = new SKPath();
-                float x = 0, y = rnd.Next(10, H - 10);
+                float x = 0, y = rnd.Next(20, H - 20);
                 path.MoveTo(x, y);
                 while (x < W)
                 {
-                    x += rnd.Next(10, 25);
-                    y += rnd.Next(-6, 7);
+                    x += rnd.Next(8, 20);
+                    y += rnd.Next(-8, 9);
                     y = Math.Clamp(y, 5, H - 5);
                     path.LineTo(x, y);
                 }
@@ -123,41 +123,46 @@ class Program
             }
         }
 
-        // Vẽ từng chữ số — nghiêng nhiều hơn + Y ngẫu nhiên (không thẳng hàng)
-        using var textPaint = new SKPaint
-        {
-            IsAntialias = true,
-            TextSize = 56,
-            FakeBoldText = true,
-            Style = SKPaintStyle.Fill
-        };
-
-        float posX = 10;
+        // Vẽ từng chữ số
+        // - nghiêng mạnh: -40° ~ +40° (không bao giờ thẳng)
+        // - khoảng cách sát/chồng nhau: 28~38px (font 50-62px nên chồng lên nhau)
+        // - Y lên xuống mạnh: ±22px
+        // - font size random mỗi chữ
+        float posX = 15;
         foreach (char ch in code)
         {
-            // Màu tối đậm, tương phản cao
-            textPaint.Color = new SKColor(
-                (byte)rnd.Next(0,  60),
-                (byte)rnd.Next(0,  60),
-                (byte)rnd.Next(100, 180));
+            float fontSize = rnd.Next(48, 63);  // size random mỗi chữ
 
-            // Nghiêng nhiều hơn: -30° ~ +30°, đảm bảo không bị 0
+            using var textPaint = new SKPaint
+            {
+                IsAntialias  = true,
+                TextSize     = fontSize,
+                FakeBoldText = true,
+                Style        = SKPaintStyle.Fill,
+                Color        = new SKColor(
+                    (byte)rnd.Next(0,  50),
+                    (byte)rnd.Next(0,  50),
+                    (byte)rnd.Next(90, 175))
+            };
+
+            // Luôn nghiêng, không thẳng: -40~-15 hoặc +15~+40
             int angle = rnd.Next(0, 2) == 0
-                ? rnd.Next(-30, -10)   // nghiêng trái
-                : rnd.Next(10, 31);    // nghiêng phải
+                ? rnd.Next(-40, -14)
+                : rnd.Next(15, 41);
 
-            // Vị trí Y ngẫu nhiên mạnh — không thẳng hàng
-            float baseY = 65f + rnd.Next(-18, 19);
+            // Y lên xuống mạnh — không thẳng hàng
+            float baseY = 68f + rnd.Next(-22, 23);
 
             canvas.Save();
-            canvas.RotateDegrees(angle, posX + 22, H / 2f);
+            canvas.RotateDegrees(angle, posX + fontSize / 2f, H / 2f);
             canvas.DrawText(ch.ToString(), posX, baseY, textPaint);
             canvas.Restore();
 
-            posX += rnd.Next(44, 56);
+            // Bước nhảy nhỏ hơn font → chữ sát/chồng nhau
+            posX += rnd.Next(28, 39);
         }
 
-        // Wave distortion nhẹ
+        // Wave distortion vừa phải
         using var snapshot = surface.Snapshot();
         using var bitmap   = SKBitmap.FromImage(snapshot);
         var distorted      = WaveDistort(bitmap, W, H);
@@ -172,10 +177,10 @@ class Program
         var pass1 = new SKBitmap(W, H);
         var dst   = new SKBitmap(W, H);
 
-        // Sóng ngang nhẹ
+        // Sóng ngang
         for (int y = 0; y < H; y++)
         {
-            int offsetX = (int)(3 * Math.Sin(2 * Math.PI * y / 40.0));
+            int offsetX = (int)(4 * Math.Sin(2 * Math.PI * y / 35.0));
             for (int x = 0; x < W; x++)
             {
                 int nx = x + offsetX;
@@ -184,10 +189,10 @@ class Program
             }
         }
 
-        // Sóng dọc nhẹ
+        // Sóng dọc
         for (int x = 0; x < W; x++)
         {
-            int offsetY = (int)(2 * Math.Sin(2 * Math.PI * x / 50.0));
+            int offsetY = (int)(3 * Math.Sin(2 * Math.PI * x / 45.0));
             for (int y = 0; y < H; y++)
             {
                 int ny = y + offsetY;
