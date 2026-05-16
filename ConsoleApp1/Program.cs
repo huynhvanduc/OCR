@@ -103,44 +103,84 @@ class Program
     // ─────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Recognises a 3-digit CAPTCHA using colour-based text extraction and
-    /// position-aware per-character segmentation + deskew.
+    /// Recognises a 3-digit CAPTCHA.
     ///
     /// Strategy overview:
-    ///   1. Extract blue-channel pixels  → eliminates all gray noise/lines.
-    ///   2. Scale 3× (nearest-neighbour) → preserves crisp binary edges.
-    ///   3. Crop three overlapping regions based on the known generator layout.
-    ///   4. Deskew each region using minAreaRect of the most central contour.
-    ///   5. Tesseract PSM.SingleChar on each deskewed crop.
+    ///   1. Extract blue-channel pixels      → eliminates all gray noise/lines.
+    ///   2. Undo wave distortion             → reverses the known fixed wave
+    ///      parameters from the generator, restoring clean digit shapes.
+    ///   3. Scale 3× (nearest-neighbour)     → preserves crisp binary edges.
+    ///   4. Strategy A – full-image OCR      → try PSM.SingleLine / SingleWord
+    ///      on the whole image; return immediately if 3 digits are found.
+    ///   5. Strategy B – per-character crops → crop three overlapping regions,
+    ///      add padding, deskew, then try PSM.SingleChar → SingleLine → Raw
+    ///      in order, accepting the first response that yields a digit.
     /// </summary>
     static string RecognizeCaptcha(string imagePath)
     {
         using var blueMask = ExtractBlueText(imagePath);   // white = text
 
-        const int Scale  = 3;
-        int       scaledW = blueMask.Width  * Scale;
-        int       scaledH = blueMask.Height * Scale;
+        // Reverse the known wave distortion applied by the generator so that
+        // digit shapes are clean before scaling and OCR.
+        using var deWaved = UndoWaveDistortion(blueMask);
+
+        const int Scale   = 3;
+        int       scaledW = deWaved.Width  * Scale;
+        int       scaledH = deWaved.Height * Scale;
 
         using var scaled = new Mat();
-        Cv2.Resize(blueMask, scaled, new OpenCvSharp.Size(scaledW, scaledH),
+        Cv2.Resize(deWaved, scaled, new OpenCvSharp.Size(scaledW, scaledH),
                    interpolation: InterpolationFlags.Nearest);
 
         // Tesseract convention: black text on white background
         using var forOcr = new Mat();
         Cv2.BitwiseNot(scaled, forOcr);
 
+        // ── Strategy A: full-image OCR ───────────────────────────────────────
+        // Works well when character rotation is moderate; very fast when it
+        // succeeds because it avoids per-character segmentation.
+        string? fullResult = TryFullImageOcr(forOcr);
+        if (fullResult != null) return fullResult;
+
+        // ── Strategy B: per-character crops with deskew ──────────────────────
         // CAPTCHA generator layout (original 180 × 100 image):
         //   posX starts at 15, step = 28-38 px (mean ≈ 33), fontSize = 48-62 px
         //   Rotation pivot: (posX + fontSize/2, 50) ; angle ∈ [±15°, ±40°]
-        //   At max rotation (40°) the horizontal footprint of each char ≈ 62 px.
         //
         //   Char-0 rotation centre ≈  42 px  →  footprint ≈  [5,  80]
         //   Char-1 rotation centre ≈  75 px  →  footprint ≈ [38, 115]
         //   Char-2 rotation centre ≈ 108 px  →  footprint ≈ [68, 148]
-        //
-        // Each crop is intentionally wide so the target character is always
-        // fully captured; the DeskewChar method focuses on the most centrally
-        // located contour to ignore partial bleed from adjacent characters.
+        return RecognizePerChar(forOcr, scaledW, scaledH);
+    }
+
+    /// <summary>
+    /// Attempts to read all three digits in one Tesseract call on the full
+    /// (wave-corrected, scaled) image.  Returns null when fewer than 3 digits
+    /// are found so the caller can fall back to per-character segmentation.
+    /// </summary>
+    static string? TryFullImageOcr(Mat forOcr)
+    {
+        // Add generous white padding so Tesseract doesn't clip edge strokes.
+        using var padded = new Mat();
+        Cv2.CopyMakeBorder(forOcr, padded, 25, 25, 30, 30,
+                           BorderTypes.Constant, new Scalar(255));
+
+        foreach (var psm in new[] { PageSegMode.SingleLine, PageSegMode.SingleWord, PageSegMode.SparseText })
+        {
+            string raw    = RunTesseract(padded, psm);
+            string digits = new string(raw.Where(char.IsDigit).ToArray());
+            if (digits.Length == 3) return digits;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Recognises each digit individually using overlapping fixed-width crops,
+    /// deskew, and a cascade of Tesseract PSM modes.
+    /// </summary>
+    static string RecognizePerChar(Mat forOcr, int scaledW, int scaledH)
+    {
+        const int Scale = 3;
         var charRegions = new (int x1, int x2)[]
         {
             (5   * Scale, 80  * Scale),                          // Digit 0
@@ -156,11 +196,24 @@ class Program
             x2 = Math.Min(scaledW, x2);
             if (x2 <= x1) { digits[idx] = '?'; continue; }
 
-            using var crop     = forOcr[new OpenCvSharp.Rect(x1, 0, x2 - x1, scaledH)];
-            using var deskewed = DeskewChar(crop);
-            string    raw      = RunTesseract(deskewed, PageSegMode.SingleChar);
-            string    digit    = new string(raw.Where(char.IsDigit).ToArray());
-            digits[idx]        = digit.Length > 0 ? digit[0] : '?';
+            using var crop = forOcr[new OpenCvSharp.Rect(x1, 0, x2 - x1, scaledH)];
+
+            // White padding gives Tesseract clear context around the digit.
+            using var padded = new Mat();
+            Cv2.CopyMakeBorder(crop, padded, 20, 20, 10, 10,
+                               BorderTypes.Constant, new Scalar(255));
+
+            using var deskewed = DeskewChar(padded);
+
+            // Cascade: accept the first PSM that returns a digit.
+            char ch = '?';
+            foreach (var psm in new[] { PageSegMode.SingleChar, PageSegMode.SingleLine, PageSegMode.SparseText })
+            {
+                string raw   = RunTesseract(deskewed, psm);
+                string digit = new string(raw.Where(char.IsDigit).ToArray());
+                if (digit.Length > 0) { ch = digit[0]; break; }
+            }
+            digits[idx] = ch;
         }
 
         return new string(digits);
@@ -177,7 +230,10 @@ class Program
     ///   ch[0]=B ∈ [90, 174],  ch[1]=G ∈ [0, 49],  ch[2]=R ∈ [0, 49]
     /// Noise / background:  R ≈ G ≈ B  (gray or near-white) → excluded
     ///
-    /// Condition:  B > 70  AND  (B − R) > 35  AND  (B − G) > 35
+    /// Condition:  B > 55  AND  (B − R) > 25  AND  (B − G) > 25
+    /// Thresholds are intentionally loose relative to the pure-colour values
+    /// so that anti-aliased edge pixels (blended with the white background
+    /// by SkiaSharp's IsAntialias rendering) are still captured.
     /// Unsigned subtraction naturally clamps to 0 when B < R or B < G,
     /// which correctly rejects gray pixels without an explicit sign check.
     ///
@@ -192,9 +248,9 @@ class Program
             using var bMinusR = new Mat(); Cv2.Subtract(ch[0], ch[2], bMinusR);
             using var bMinusG = new Mat(); Cv2.Subtract(ch[0], ch[1], bMinusG);
 
-            using var mBR = new Mat(); Cv2.Threshold(bMinusR, mBR, 35, 255, ThresholdTypes.Binary);
-            using var mBG = new Mat(); Cv2.Threshold(bMinusG, mBG, 35, 255, ThresholdTypes.Binary);
-            using var mB  = new Mat(); Cv2.Threshold(ch[0],   mB,  70, 255, ThresholdTypes.Binary);
+            using var mBR = new Mat(); Cv2.Threshold(bMinusR, mBR, 25, 255, ThresholdTypes.Binary);
+            using var mBG = new Mat(); Cv2.Threshold(bMinusG, mBG, 25, 255, ThresholdTypes.Binary);
+            using var mB  = new Mat(); Cv2.Threshold(ch[0],   mB,  55, 255, ThresholdTypes.Binary);
 
             var mask = new Mat();
             using var tmp = new Mat();
@@ -212,6 +268,57 @@ class Program
         {
             foreach (var c in ch) c.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Reverses the two-pass wave distortion applied by the CAPTCHA generator.
+    ///
+    /// Forward transform (generator code):
+    ///   Pass 1 – horizontal wave: pass1[x + offsetX(y), y] = src[x, y]
+    ///            where offsetX(y) = (int)(4 · sin(2π · y / 35))
+    ///   Pass 2 – vertical wave:   dst[x, y + offsetY(x)] = pass1[x, y]
+    ///            where offsetY(x) = (int)(3 · sin(2π · x / 45))
+    ///
+    /// Inverse (applied here):
+    ///   Step 1 undo pass 2: pass1_rec[col, row] = distorted[col, row + offsetY(col)]
+    ///   Step 2 undo pass 1: src_rec  [col, row] = pass1_rec [col + offsetX(row), row]
+    ///
+    /// Because the amplitudes and frequencies are fixed constants embedded in
+    /// the generator, the reversal is exact (aside from pixels that were shifted
+    /// out of the image boundary, which remain black/background).
+    /// </summary>
+    static Mat UndoWaveDistortion(Mat distorted)
+    {
+        int W = distorted.Width, H = distorted.Height;
+
+        // Step 1: undo vertical wave (pass 2)
+        var pass1Rec = new Mat(H, W, MatType.CV_8UC1, new Scalar(0));
+        for (int col = 0; col < W; col++)
+        {
+            int offsetY = (int)(3.0 * Math.Sin(2.0 * Math.PI * col / 45.0));
+            for (int row = 0; row < H; row++)
+            {
+                int srcRow = row + offsetY;
+                if ((uint)srcRow < (uint)H)
+                    pass1Rec.Set<byte>(row, col, distorted.At<byte>(srcRow, col));
+            }
+        }
+
+        // Step 2: undo horizontal wave (pass 1)
+        var result = new Mat(H, W, MatType.CV_8UC1, new Scalar(0));
+        for (int row = 0; row < H; row++)
+        {
+            int offsetX = (int)(4.0 * Math.Sin(2.0 * Math.PI * row / 35.0));
+            for (int col = 0; col < W; col++)
+            {
+                int srcCol = col + offsetX;
+                if ((uint)srcCol < (uint)W)
+                    result.Set<byte>(row, col, pass1Rec.At<byte>(row, srcCol));
+            }
+        }
+
+        pass1Rec.Dispose();
+        return result;
     }
 
     /// <summary>
