@@ -1,5 +1,5 @@
 using IronOcr;
-using SkiaSharp;
+using OpenCvSharp;
 using System.Text.Json;
 
 class Program
@@ -27,23 +27,35 @@ class Program
 
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
-        int[] thresholds = { 100, 120, 140, 160, 180 };
+        int[] thresholds  = { 100, 120, 140, 160, 180 };
+        const int MaxRetry = 3;
 
         for (int i = 1; i <= rounds; i++)
         {
             Console.WriteLine($"\n[Round {i}/{rounds}]");
 
-            // ── Download CAPTCHA ──────────────────────────────────────────
-            byte[] imageBytes;
-            try
+            // ── Download CAPTCHA (tự retry tối đa MaxRetry lần) ──────────
+            byte[]? imageBytes = null;
+            for (int attempt = 1; attempt <= MaxRetry; attempt++)
             {
-                imageBytes = await client.GetByteArrayAsync(captchaUrl);
-                await File.WriteAllBytesAsync("captcha.png", imageBytes);
-                Console.Write($"  Downloaded : {imageBytes.Length} bytes  |  ");
+                try
+                {
+                    imageBytes = await client.GetByteArrayAsync(captchaUrl);
+                    await File.WriteAllBytesAsync("captcha.png", imageBytes);
+                    Console.Write($"  Downloaded : {imageBytes.Length} bytes");
+                    if (attempt > 1) Console.Write($" (attempt {attempt})");
+                    Console.Write("  |  ");
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  [WARN] Download attempt {attempt}/{MaxRetry}: {ex.Message}");
+                    if (attempt < MaxRetry) await Task.Delay(500 * attempt);
+                }
             }
-            catch (Exception ex)
+            if (imageBytes is null)
             {
-                Console.WriteLine($"  [ERROR] Download: {ex.Message}");
+                Console.WriteLine("  [ERROR] All download attempts failed, skipping round.");
                 continue;
             }
 
@@ -54,7 +66,7 @@ class Program
                 var json = await client.GetStringAsync(answerUrl);
                 groundTruth = JsonDocument.Parse(json).RootElement
                     .GetProperty("code").GetString() ?? "";
-                Console.WriteLine($"Truth = {groundTruth}");
+                Console.WriteLine($"Answer = {groundTruth}");
             }
             catch (Exception ex)
             {
@@ -62,7 +74,7 @@ class Program
                 continue;
             }
 
-            // ── Thử từng threshold, ghi kết quả vào stats ────────────────
+            // ── Thử từng threshold, in OCR result và answer ───────────────
             foreach (int threshold in thresholds)
             {
                 string processedPath = $"captcha_t{threshold}.png";
@@ -78,7 +90,7 @@ class Program
                 stats.ThresholdStats[threshold].Total++;
                 if (hit) stats.ThresholdStats[threshold].Correct++;
 
-                Console.WriteLine($"  t={threshold,3}: \"{digits}\" {(hit ? "✓" : $"✗ ({groundTruth})")}  acc={stats.ThresholdStats[threshold].Accuracy:F1}%");
+                Console.WriteLine($"  t={threshold,3}: OCR=\"{digits}\"  Answer={groundTruth}  {(hit ? "✓" : "✗")}  acc={stats.ThresholdStats[threshold].Accuracy:F1}%");
             }
 
             stats.TotalRuns++;
@@ -90,7 +102,6 @@ class Program
 
             // Lưu stats sau mỗi round để không mất dữ liệu
             SaveStats(stats);
-            Console.ReadKey();
         }
 
         // ── Tổng kết ─────────────────────────────────────────────────────
@@ -113,23 +124,30 @@ class Program
 
     static void PreprocessImage(string inputPath, string outputPath, int threshold = 150)
     {
-        using var original  = SKBitmap.Decode(inputPath);
-        int newW = original.Width  * 4;
-        int newH = original.Height * 4;
-        using var scaled    = original.Resize(new SKImageInfo(newW, newH), SKFilterQuality.High);
-        using var processed = new SKBitmap(newW, newH);
+        const int ScaleFactor = 4;
 
-        for (int y = 0; y < newH; y++)
-            for (int x = 0; x < newW; x++)
-            {
-                SKColor c    = scaled.GetPixel(x, y);
-                int     gray = (int)(c.Red * 0.299 + c.Green * 0.587 + c.Blue * 0.114);
-                processed.SetPixel(x, y, gray < threshold ? SKColors.Black : SKColors.White);
-            }
+        // Đọc ảnh gốc bằng OpenCV
+        using var src = Cv2.ImRead(inputPath, ImreadModes.Color);
 
-        using var image = SKImage.FromBitmap(processed);
-        using var data  = image.Encode(SKEncodedImageFormat.Png, 100);
-        File.WriteAllBytes(outputPath, data.ToArray());
+        // 1. Phóng to ScaleFactor× để Tesseract nhận diện tốt hơn
+        using var scaled = new Mat();
+        Cv2.Resize(src, scaled, new OpenCvSharp.Size(src.Width * ScaleFactor, src.Height * ScaleFactor),
+                   interpolation: InterpolationFlags.Cubic);
+
+        // 2. Chuyển sang ảnh xám
+        using var gray = new Mat();
+        Cv2.CvtColor(scaled, gray, ColorConversionCodes.BGR2GRAY);
+
+        // 3. Khử nhiễu bằng FastNlMeansDenoising
+        using var denoised = new Mat();
+        Cv2.FastNlMeansDenoising(gray, denoised, h: 10, templateWindowSize: 7, searchWindowSize: 21);
+
+        // 4. Nhị phân hóa (trắng đen) bằng ngưỡng cố định
+        using var binary = new Mat();
+        Cv2.Threshold(denoised, binary, threshold, 255, ThresholdTypes.Binary);
+
+        // 5. Lưu file ảnh trắng đen
+        Cv2.ImWrite(outputPath, binary);
     }
 
     static string RunIronOcr(string imagePath)
