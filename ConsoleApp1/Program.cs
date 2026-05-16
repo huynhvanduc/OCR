@@ -7,6 +7,7 @@ class Program
     const string StatsFile  = "ocr_stats.json";
     const string LogFile    = "ocr_log.txt";
     const string CorrectDir = "correct_captchas";
+    const string WrongDir   = "wrong_captchas";
 
     // Reuse Tesseract engine to avoid repeated initialisation overhead.
     // Lazy<T> ensures thread-safe single initialisation.
@@ -97,6 +98,14 @@ class Program
                 File.Copy("captcha.png", destFile, overwrite: true);
                 Console.WriteLine($"  [SAVED] {destFile}");
             }
+            else
+            {
+                Directory.CreateDirectory(WrongDir);
+                string destFile = Path.Combine(WrongDir,
+                    $"{DateTime.Now:yyyyMMdd_HHmmss_fff}_ocr{ocrResult}_ans{groundTruth}.png");
+                File.Copy("captcha.png", destFile, overwrite: true);
+                Console.WriteLine($"  [SAVED WRONG] {destFile}");
+            }
         }
 
         Console.WriteLine("\n=====================================================");
@@ -114,6 +123,10 @@ class Program
         if (Directory.Exists(CorrectDir))
             Directory.Delete(CorrectDir, recursive: true);
         Directory.CreateDirectory(CorrectDir);
+
+        if (Directory.Exists(WrongDir))
+            Directory.Delete(WrongDir, recursive: true);
+        Directory.CreateDirectory(WrongDir);
 
         if (File.Exists(StatsFile))
             File.Delete(StatsFile);
