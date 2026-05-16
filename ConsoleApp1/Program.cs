@@ -8,6 +8,7 @@ class Program
     const string LogFile    = "ocr_log.txt";
     const string CorrectDir = "correct_captchas";
     const string WrongDir   = "wrong_captchas";
+    const int    DefaultDpi = 300;
 
     // Reuse Tesseract engine to avoid repeated initialisation overhead.
     // Lazy<T> ensures thread-safe single initialisation.
@@ -487,6 +488,8 @@ class Program
             var engine = GetTessEngine();
             engine.DefaultPageSegMode = psm;
             using var img  = Pix.LoadFromFile(imagePath);
+            img.XRes = DefaultDpi;
+            img.YRes = DefaultDpi;
             using var page = engine.Process(img);
             return page.GetText().Trim();
         }
@@ -511,6 +514,9 @@ class Program
         // CAPTCHA input is numeric-only, so use the digits model for better accuracy.
         var engine = new TesseractEngine(tessData, "digits", EngineMode.LstmOnly);
         engine.SetVariable("tessedit_char_whitelist", "0123456789");
+        // Suppress Tesseract verbose output (e.g. "Estimating resolution as XXX").
+        engine.SetVariable("debug_file",
+            System.OperatingSystem.IsWindows() ? "nul" : "/dev/null");
         return engine;
     }
 
