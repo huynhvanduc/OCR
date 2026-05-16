@@ -5,6 +5,7 @@ using Tesseract;
 class Program
 {
     const string StatsFile = "ocr_stats.json";
+    const string LogFile   = "ocr_log.csv";
 
     // Reuse Tesseract engine to avoid repeated initialisation overhead.
     // Lazy<T> ensures thread-safe single initialisation.
@@ -84,12 +85,14 @@ class Program
 
             Console.WriteLine($"  OCR=\"{ocrResult}\"  Answer={groundTruth}  {(hit ? "✓" : "✗")}  acc={stats.Accuracy:F1}%");
             SaveStats(stats);
+            AppendLog(groundTruth, ocrResult, stats.Accuracy);
         }
 
         Console.WriteLine("\n=====================================================");
         Console.WriteLine($"  Total rounds : {stats.TotalRuns}");
         Console.WriteLine($"  Accuracy     : {stats.Correct}/{stats.Total} = {stats.Accuracy:F1}%");
         Console.WriteLine($"  Stats file   : {Path.GetFullPath(StatsFile)}");
+        Console.WriteLine($"  Log file     : {Path.GetFullPath(LogFile)}");
         Console.WriteLine("=====================================================");
 
         if (_tessEngineLazy.IsValueCreated) _tessEngineLazy.Value.Dispose();
@@ -341,6 +344,19 @@ class Program
         File.WriteAllText(StatsFile,
             JsonSerializer.Serialize(stats, new JsonSerializerOptions { WriteIndented = true }));
     }
+
+    static void AppendLog(string expected, string actual, double runningAccuracy)
+    {
+        using var writer = new StreamWriter(LogFile, append: true, System.Text.Encoding.UTF8);
+        // Write header only when the file is empty (newly created or truncated)
+        if (writer.BaseStream.Position == 0)
+            writer.WriteLine("Timestamp,Expected,Actual,Match,RunningAccuracy(%)");
+        bool match = expected == actual;
+        writer.WriteLine(
+            $"{DateTime.Now:yyyy-MM-dd HH:mm:ss},{CsvEscape(expected)},{CsvEscape(actual)},{(match ? "1" : "0")},{runningAccuracy:F1}");
+    }
+
+    static string CsvEscape(string value) => $"\"{value.Replace("\"", "\"\"")}\"";
 }
 
 class OcrStats
