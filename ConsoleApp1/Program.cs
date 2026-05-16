@@ -24,6 +24,7 @@ class Program
         Console.WriteLine("=====================================================");
         Console.WriteLine($"[INFO]  Server   : {baseUrl}");
         Console.WriteLine($"[INFO]  Rounds   : {rounds}");
+        ResetSession();
 
         var stats = LoadStats();
         Console.WriteLine($"[INFO]  History  : {stats.TotalRuns} rounds done before, accuracy = {stats.Accuracy:F1}%");
@@ -106,6 +107,21 @@ class Program
         Console.WriteLine("=====================================================");
 
         if (_tessEngineLazy.IsValueCreated) _tessEngineLazy.Value.Dispose();
+    }
+
+    static void ResetSession()
+    {
+        if (Directory.Exists(CorrectDir))
+            Directory.Delete(CorrectDir, recursive: true);
+        Directory.CreateDirectory(CorrectDir);
+
+        if (File.Exists(StatsFile))
+            File.Delete(StatsFile);
+
+        if (File.Exists(LogFile))
+            File.Delete(LogFile);
+
+        Console.WriteLine("[INFO]  Session reset: stats, log and saved images cleared.");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
