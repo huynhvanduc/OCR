@@ -292,7 +292,9 @@ class Program
         int W = distorted.Width, H = distorted.Height;
 
         // Step 1: undo vertical wave (pass 2)
-        var pass1Rec = new Mat(H, W, MatType.CV_8UC1, new Scalar(0));
+        // Forward: dst[col, row + offsetY(col)] = pass1[col, row]
+        // Inverse: pass1_rec[col, row] = dst[col, row + offsetY(col)]
+        using var pass1Rec = new Mat(H, W, MatType.CV_8UC1, new Scalar(0));
         for (int col = 0; col < W; col++)
         {
             int offsetY = (int)(3.0 * Math.Sin(2.0 * Math.PI * col / 45.0));
@@ -305,6 +307,8 @@ class Program
         }
 
         // Step 2: undo horizontal wave (pass 1)
+        // Forward: pass1[col + offsetX(row), row] = src[col, row]
+        // Inverse: src_rec[col, row] = pass1_rec[col + offsetX(row), row]
         var result = new Mat(H, W, MatType.CV_8UC1, new Scalar(0));
         for (int row = 0; row < H; row++)
         {
@@ -317,7 +321,6 @@ class Program
             }
         }
 
-        pass1Rec.Dispose();
         return result;
     }
 
