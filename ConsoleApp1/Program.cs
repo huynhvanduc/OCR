@@ -4,8 +4,9 @@ using Tesseract;
 
 class Program
 {
-    const string StatsFile = "ocr_stats.json";
-    const string LogFile   = "ocr_log.csv";
+    const string StatsFile  = "ocr_stats.json";
+    const string LogFile    = "ocr_log.txt";
+    const string CorrectDir = "correct_captchas";
 
     // Reuse Tesseract engine to avoid repeated initialisation overhead.
     // Lazy<T> ensures thread-safe single initialisation.
@@ -86,6 +87,15 @@ class Program
             Console.WriteLine($"  OCR=\"{ocrResult}\"  Answer={groundTruth}  {(hit ? "✓" : "✗")}  acc={stats.Accuracy:F1}%");
             SaveStats(stats);
             AppendLog(groundTruth, ocrResult, stats.Accuracy);
+
+            if (hit)
+            {
+                Directory.CreateDirectory(CorrectDir);
+                string destFile = Path.Combine(CorrectDir,
+                    $"{DateTime.Now:yyyyMMdd_HHmmss_fff}_{groundTruth}.png");
+                File.Copy("captcha.png", destFile, overwrite: true);
+                Console.WriteLine($"  [SAVED] {destFile}");
+            }
         }
 
         Console.WriteLine("\n=====================================================");
@@ -120,11 +130,18 @@ class Program
     {
         using var blueMask = ExtractBlueText(imagePath);   // white = text
 
+        // Dilate the binary mask before wave-undistortion to fill small
+        // intra-stroke gaps introduced by anti-aliasing and colour thresholding.
+        using var dilKernel = Cv2.GetStructuringElement(
+            MorphShapes.Ellipse, new OpenCvSharp.Size(3, 3));
+        using var dilated = new Mat();
+        Cv2.Dilate(blueMask, dilated, dilKernel);
+
         // Reverse the known wave distortion applied by the generator so that
         // digit shapes are clean before scaling and OCR.
-        using var deWaved = UndoWaveDistortion(blueMask);
+        using var deWaved = UndoWaveDistortion(dilated);
 
-        const int Scale   = 3;
+        const int Scale   = 4;
         int       scaledW = deWaved.Width  * Scale;
         int       scaledH = deWaved.Height * Scale;
 
@@ -175,12 +192,12 @@ class Program
     }
 
     /// <summary>
-    /// Recognises each digit individually using overlapping fixed-width crops,
-    /// deskew, and a cascade of Tesseract PSM modes.
+    /// Recognises each digit individually using overlapping fixed-width crops
+    /// and a rotation-search cascade to handle heavy per-character tilt.
     /// </summary>
     static string RecognizePerChar(Mat forOcr, int scaledW, int scaledH)
     {
-        const int Scale = 3;
+        const int Scale = 4;
         var charRegions = new (int x1, int x2)[]
         {
             (5   * Scale, 80  * Scale),                          // Digit 0
@@ -203,20 +220,75 @@ class Program
             Cv2.CopyMakeBorder(crop, padded, 20, 20, 10, 10,
                                BorderTypes.Constant, new Scalar(255));
 
-            using var deskewed = DeskewChar(padded);
-
-            // Cascade: accept the first PSM that returns a digit.
-            char ch = '?';
-            foreach (var psm in new[] { PageSegMode.SingleChar, PageSegMode.SingleLine, PageSegMode.SparseText })
-            {
-                string raw   = RunTesseract(deskewed, psm);
-                string digit = new string(raw.Where(char.IsDigit).ToArray());
-                if (digit.Length > 0) { ch = digit[0]; break; }
-            }
-            digits[idx] = ch;
+            digits[idx] = TryRecognizeChar(padded);
         }
 
         return new string(digits);
+    }
+
+    /// <summary>
+    /// Tries to read a single digit from <paramref name="paddedCrop"/>
+    /// (black text on white, padded crop of the 4× scaled image).
+    ///
+    /// Strategy:
+    ///   1. Deskew via minAreaRect (auto-detected angle) + Tesseract cascade.
+    ///   2. Brute-force rotation search (±5°–45°) as fallback — accounts for
+    ///      the ±15°–40° per-character tilt in the CAPTCHA generator.
+    ///
+    /// Stroke thickening (erode white background) is applied before each
+    /// Tesseract call to improve recognition of thin anti-aliased strokes.
+    /// </summary>
+    static char TryRecognizeChar(Mat paddedCrop)
+    {
+        // ── Try 1: deskew-based (auto-detected angle) ─────────────────────
+        using var deskewed = DeskewChar(paddedCrop);
+        using var thickened1 = ThickenStrokes(deskewed);
+        foreach (var psm in new[] { PageSegMode.SingleChar, PageSegMode.SingleLine, PageSegMode.SparseText })
+        {
+            string raw   = RunTesseract(thickened1, psm);
+            string digit = new string(raw.Where(char.IsDigit).ToArray());
+            if (digit.Length > 0) return digit[0];
+        }
+
+        // ── Try 2: brute-force rotation search ────────────────────────────
+        // Characters are rotated ±15°–40°; search ±5°–45° in order of most
+        // likely tilt (large angles first, then smaller adjustments).
+        float[] searchAngles = { -35f, 35f, -25f, 25f, -15f, 15f, -45f, 45f, -5f, 5f };
+        foreach (float angle in searchAngles)
+        {
+            using var rotated   = RotateMat(paddedCrop, angle);
+            using var thickened2 = ThickenStrokes(rotated);
+            foreach (var psm in new[] { PageSegMode.SingleChar, PageSegMode.SingleLine })
+            {
+                string raw   = RunTesseract(thickened2, psm);
+                string digit = new string(raw.Where(char.IsDigit).ToArray());
+                if (digit.Length > 0) return digit[0];
+            }
+        }
+
+        return '?';
+    }
+
+    /// <summary>Thickens black strokes on a white background by eroding white.</summary>
+    static Mat ThickenStrokes(Mat blackOnWhite)
+    {
+        using var kernel = Cv2.GetStructuringElement(
+            MorphShapes.Ellipse, new OpenCvSharp.Size(2, 2));
+        var result = new Mat();
+        Cv2.Erode(blackOnWhite, result, kernel);
+        return result;
+    }
+
+    /// <summary>Rotates <paramref name="src"/> by <paramref name="angleDeg"/> degrees
+    /// around its centre, filling the border with white (255).</summary>
+    static Mat RotateMat(Mat src, float angleDeg)
+    {
+        var center = new Point2f(src.Width / 2f, src.Height / 2f);
+        using var rotMat = Cv2.GetRotationMatrix2D(center, angleDeg, 1.0);
+        var result = new Mat();
+        Cv2.WarpAffine(src, result, rotMat, src.Size(),
+            InterpolationFlags.Linear, BorderTypes.Constant, new Scalar(255));
+        return result;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -230,10 +302,9 @@ class Program
     ///   ch[0]=B ∈ [90, 174],  ch[1]=G ∈ [0, 49],  ch[2]=R ∈ [0, 49]
     /// Noise / background:  R ≈ G ≈ B  (gray or near-white) → excluded
     ///
-    /// Condition:  B > 55  AND  (B − R) > 25  AND  (B − G) > 25
-    /// Thresholds are intentionally loose relative to the pure-colour values
-    /// so that anti-aliased edge pixels (blended with the white background
-    /// by SkiaSharp's IsAntialias rendering) are still captured.
+    /// Condition:  B > 40  AND  (B − R) > 18  AND  (B − G) > 18
+    /// Thresholds are intentionally loose so that anti-aliased edge pixels
+    /// (blended with the white background) are still captured.
     /// Unsigned subtraction naturally clamps to 0 when B < R or B < G,
     /// which correctly rejects gray pixels without an explicit sign check.
     ///
@@ -248,9 +319,9 @@ class Program
             using var bMinusR = new Mat(); Cv2.Subtract(ch[0], ch[2], bMinusR);
             using var bMinusG = new Mat(); Cv2.Subtract(ch[0], ch[1], bMinusG);
 
-            using var mBR = new Mat(); Cv2.Threshold(bMinusR, mBR, 25, 255, ThresholdTypes.Binary);
-            using var mBG = new Mat(); Cv2.Threshold(bMinusG, mBG, 25, 255, ThresholdTypes.Binary);
-            using var mB  = new Mat(); Cv2.Threshold(ch[0],   mB,  55, 255, ThresholdTypes.Binary);
+            using var mBR = new Mat(); Cv2.Threshold(bMinusR, mBR, 18, 255, ThresholdTypes.Binary);
+            using var mBG = new Mat(); Cv2.Threshold(bMinusG, mBG, 18, 255, ThresholdTypes.Binary);
+            using var mB  = new Mat(); Cv2.Threshold(ch[0],   mB,  40, 255, ThresholdTypes.Binary);
 
             var mask = new Mat();
             using var tmp = new Mat();
@@ -457,16 +528,10 @@ class Program
 
     static void AppendLog(string expected, string actual, double runningAccuracy)
     {
-        using var writer = new StreamWriter(LogFile, append: true, System.Text.Encoding.UTF8);
-        // Write header only when the file is empty (newly created or truncated)
-        if (writer.BaseStream.Position == 0)
-            writer.WriteLine("Timestamp,Expected,Actual,Match,RunningAccuracy(%)");
         bool match = expected == actual;
-        writer.WriteLine(
-            $"{DateTime.Now:yyyy-MM-dd HH:mm:ss},{CsvEscape(expected)},{CsvEscape(actual)},{(match ? "1" : "0")},{runningAccuracy:F1}");
+        string line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}]  Expected: {expected}  |  Actual: {actual}  |  Match: {(match ? "YES" : "NO")}  |  Running Accuracy: {runningAccuracy:F1}%";
+        File.AppendAllText(LogFile, line + Environment.NewLine, System.Text.Encoding.UTF8);
     }
-
-    static string CsvEscape(string value) => $"\"{value.Replace("\"", "\"\"")}\"";
 }
 
 class OcrStats
