@@ -500,7 +500,8 @@ class Program
                 $"tessdata not found at '{tessData}'. " +
                 "Place the tessdata folder next to the executable or set the TESSDATA_PREFIX environment variable.");
 
-        var engine = new TesseractEngine(tessData, "eng", EngineMode.LstmOnly);
+        // CAPTCHA input is numeric-only, so use the digits model for better accuracy.
+        var engine = new TesseractEngine(tessData, "digits", EngineMode.LstmOnly);
         engine.SetVariable("tessedit_char_whitelist", "0123456789");
         return engine;
     }
