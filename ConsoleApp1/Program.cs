@@ -16,28 +16,19 @@ class Program
     static async Task Main(string[] args)
     {
         string baseUrl    = args.Length > 0 ? args[0] : "http://localhost:5000";
-        int    rounds     = args.Length > 1 ? int.Parse(args[1]) : 20;
+        int    rounds     = args.Length > 1 ? int.Parse(args[1]) : 500;
         string captchaUrl = $"{baseUrl}/captcha";
         string answerUrl  = $"{baseUrl}/answer";
 
-        Console.WriteLine("=====================================================");
-        Console.WriteLine(" OCR CAPTCHA — Color-Extraction + Segment Strategy");
-        Console.WriteLine("=====================================================");
-        Console.WriteLine($"[INFO]  Server   : {baseUrl}");
-        Console.WriteLine($"[INFO]  Rounds   : {rounds}");
         ResetSession();
 
         var stats = LoadStats();
-        Console.WriteLine($"[INFO]  History  : {stats.TotalRuns} rounds done before, accuracy = {stats.Accuracy:F1}%");
-        Console.WriteLine("-----------------------------------------------------");
 
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         const int MaxRetry = 3;
 
         for (int i = 1; i <= rounds; i++)
         {
-            Console.WriteLine($"\n[Round {i}/{rounds}]");
-
             // ── Download CAPTCHA ──────────────────────────────────────────
             byte[]? imageBytes = null;
             for (int attempt = 1; attempt <= MaxRetry; attempt++)
@@ -46,20 +37,15 @@ class Program
                 {
                     imageBytes = await client.GetByteArrayAsync(captchaUrl);
                     await File.WriteAllBytesAsync("captcha.png", imageBytes);
-                    Console.Write($"  Downloaded : {imageBytes.Length} bytes");
-                    if (attempt > 1) Console.Write($" (attempt {attempt})");
-                    Console.Write("  |  ");
                     break;
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"  [WARN] Download attempt {attempt}/{MaxRetry}: {ex.Message}");
                     if (attempt < MaxRetry) await Task.Delay(500 * attempt);
                 }
             }
             if (imageBytes is null)
             {
-                Console.WriteLine("  [ERROR] All download attempts failed, skipping round.");
                 continue;
             }
 
@@ -70,11 +56,9 @@ class Program
                 var json = await client.GetStringAsync(answerUrl);
                 groundTruth = JsonDocument.Parse(json).RootElement
                     .GetProperty("code").GetString() ?? "";
-                Console.WriteLine($"Answer = {groundTruth}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[ERROR] Answer: {ex.Message}");
                 continue;
             }
 
@@ -86,7 +70,12 @@ class Program
             if (hit) stats.Correct++;
             stats.TotalRuns++;
 
-            Console.WriteLine($"  OCR=\"{ocrResult}\"  Answer={groundTruth}  {(hit ? "✓" : "✗")}  acc={stats.Accuracy:F1}%");
+            if (hit)
+            {
+                Console.WriteLine($"  OCR=\"{ocrResult}\"  Answer={groundTruth}  ✓  acc={stats.Accuracy:F1}%");
+            }
+
+
             SaveStats(stats);
             AppendLog(groundTruth, ocrResult, stats.Accuracy);
 
@@ -96,7 +85,6 @@ class Program
                 string destFile = Path.Combine(CorrectDir,
                     $"{DateTime.Now:yyyyMMdd_HHmmss_fff}_{groundTruth}.png");
                 File.Copy("captcha.png", destFile, overwrite: true);
-                Console.WriteLine($"  [SAVED] {destFile}");
             }
             else
             {
@@ -104,16 +92,8 @@ class Program
                 string destFile = Path.Combine(WrongDir,
                     $"{DateTime.Now:yyyyMMdd_HHmmss_fff}_ocr{ocrResult}_ans{groundTruth}.png");
                 File.Copy("captcha.png", destFile, overwrite: true);
-                Console.WriteLine($"  [SAVED WRONG] {destFile}");
             }
         }
-
-        Console.WriteLine("\n=====================================================");
-        Console.WriteLine($"  Total rounds : {stats.TotalRuns}");
-        Console.WriteLine($"  Accuracy     : {stats.Correct}/{stats.Total} = {stats.Accuracy:F1}%");
-        Console.WriteLine($"  Stats file   : {Path.GetFullPath(StatsFile)}");
-        Console.WriteLine($"  Log file     : {Path.GetFullPath(LogFile)}");
-        Console.WriteLine("=====================================================");
 
         if (_tessEngineLazy.IsValueCreated) _tessEngineLazy.Value.Dispose();
     }
@@ -134,7 +114,6 @@ class Program
         if (File.Exists(LogFile))
             File.Delete(LogFile);
 
-        Console.WriteLine("[INFO]  Session reset: stats, log and saved images cleared.");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
