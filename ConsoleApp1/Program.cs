@@ -1,5 +1,5 @@
 using IronOcr;
-using SkiaSharp;
+using OpenCvSharp;
 using System.Text.Json;
 
 class Program
@@ -113,23 +113,30 @@ class Program
 
     static void PreprocessImage(string inputPath, string outputPath, int threshold = 150)
     {
-        using var original  = SKBitmap.Decode(inputPath);
-        int newW = original.Width  * 4;
-        int newH = original.Height * 4;
-        using var scaled    = original.Resize(new SKImageInfo(newW, newH), SKFilterQuality.High);
-        using var processed = new SKBitmap(newW, newH);
+        const int ScaleFactor = 4;
 
-        for (int y = 0; y < newH; y++)
-            for (int x = 0; x < newW; x++)
-            {
-                SKColor c    = scaled.GetPixel(x, y);
-                int     gray = (int)(c.Red * 0.299 + c.Green * 0.587 + c.Blue * 0.114);
-                processed.SetPixel(x, y, gray < threshold ? SKColors.Black : SKColors.White);
-            }
+        // Đọc ảnh gốc bằng OpenCV
+        using var src = Cv2.ImRead(inputPath, ImreadModes.Color);
 
-        using var image = SKImage.FromBitmap(processed);
-        using var data  = image.Encode(SKEncodedImageFormat.Png, 100);
-        File.WriteAllBytes(outputPath, data.ToArray());
+        // 1. Phóng to ScaleFactor× để Tesseract nhận diện tốt hơn
+        using var scaled = new Mat();
+        Cv2.Resize(src, scaled, new OpenCvSharp.Size(src.Width * ScaleFactor, src.Height * ScaleFactor),
+                   interpolation: InterpolationFlags.Cubic);
+
+        // 2. Chuyển sang ảnh xám
+        using var gray = new Mat();
+        Cv2.CvtColor(scaled, gray, ColorConversionCodes.BGR2GRAY);
+
+        // 3. Khử nhiễu bằng FastNlMeansDenoising
+        using var denoised = new Mat();
+        Cv2.FastNlMeansDenoising(gray, denoised, h: 10, templateWindowSize: 7, searchWindowSize: 21);
+
+        // 4. Nhị phân hóa (trắng đen) bằng ngưỡng cố định
+        using var binary = new Mat();
+        Cv2.Threshold(denoised, binary, threshold, 255, ThresholdTypes.Binary);
+
+        // 5. Lưu file ảnh trắng đen
+        Cv2.ImWrite(outputPath, binary);
     }
 
     static string RunIronOcr(string imagePath)
