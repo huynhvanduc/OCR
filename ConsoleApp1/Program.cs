@@ -1,6 +1,6 @@
-using IronOcr;
 using OpenCvSharp;
 using System.Text.Json;
+using Tesseract;
 
 class Program
 {
@@ -15,7 +15,7 @@ class Program
         string answerUrl  = $"{baseUrl}/answer";
 
         Console.WriteLine("=====================================================");
-        Console.WriteLine(" OCR CAPTCHA — Self-Training Accuracy Loop (IronOCR)");
+        Console.WriteLine(" OCR CAPTCHA — Self-Training Accuracy Loop (Tesseract)");
         Console.WriteLine("=====================================================");
         Console.WriteLine($"[INFO]  Server   : {baseUrl}");
         Console.WriteLine($"[INFO]  Rounds   : {rounds}");
@@ -80,7 +80,7 @@ class Program
                 string processedPath = $"captcha_t{threshold}.png";
                 PreprocessImage("captcha.png", processedPath, threshold);
 
-                string ocrText = RunIronOcr(processedPath);
+                string ocrText = RunTesseract(processedPath);
                 string digits  = new string(ocrText.Where(char.IsDigit).ToArray());
                 bool   hit     = digits == groundTruth;
 
@@ -150,23 +150,26 @@ class Program
         Cv2.ImWrite(outputPath, binary);
     }
 
-    static string RunIronOcr(string imagePath)
+    static string RunTesseract(string imagePath)
     {
         try
         {
-            var ocr = new IronTesseract();
-            ocr.Configuration.WhiteListCharacters   = "0123456789";
-            ocr.Configuration.TesseractVersion      = TesseractVersion.Tesseract5;
-            ocr.Configuration.EngineMode            = TesseractEngineMode.LstmOnly;
-            ocr.Configuration.PageSegmentationMode  = TesseractPageSegmentationMode.SingleLine;
-            ocr.Configuration.ReadBarCodes          = false;
+            // tessdata folder: next to the executable, or override via TESSDATA_PREFIX env var
+            string tessData = Environment.GetEnvironmentVariable("TESSDATA_PREFIX")
+                              ?? Path.Combine(AppContext.BaseDirectory, "tessdata");
 
-            using var input = new OcrInput();
-            input.LoadImage(imagePath);
-            input.EnhanceResolution(300);
-            input.Deskew();
+            if (!Directory.Exists(tessData))
+                throw new DirectoryNotFoundException(
+                    $"tessdata not found at '{tessData}'. " +
+                    "Place the tessdata folder next to the executable or set the TESSDATA_PREFIX environment variable.");
 
-            return ocr.Read(input).Text.Trim();
+            using var engine = new TesseractEngine(tessData, "eng", EngineMode.LstmOnly);
+            engine.SetVariable("tessedit_char_whitelist", "0123456789");
+            engine.DefaultPageSegMode = PageSegMode.SingleLine;
+
+            using var img  = Pix.LoadFromFile(imagePath);
+            using var page = engine.Process(img);
+            return page.GetText().Trim();
         }
         catch
         {
