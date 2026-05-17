@@ -1,4 +1,5 @@
 using OpenCvSharp;
+using System.Text;
 using System.Text.Json;
 using Tesseract;
 
@@ -10,8 +11,11 @@ class Program
     const string WrongDir   = "wrong_captchas";
     const string DenoiseDir = "zzz";
     const int    DefaultDpi = 200;
+    const int    ChartInnerWidth = 62;
+    const int    ChartRenderLines = 22;
 
     static readonly Lazy<TesseractEngine> _tessEngineLazy = new(CreateTessEngine);
+    static readonly List<double> _accuracyHistory = new();
 
     static async Task Main(string[] args)
     {
@@ -27,6 +31,7 @@ class Program
 
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         const int MaxRetry = 3;
+        Console.Clear();
 
         for (int i = 1; i <= rounds; i++)
         {
@@ -73,11 +78,8 @@ class Program
             stats.Total++;
             if (hit) stats.Correct++;
             stats.TotalRuns++;
-
-            if (hit)
-            {
-                Console.WriteLine($"[{i}]:  OCR=\"{ocrResult}\"  Answer={groundTruth}  ✓  acc={stats.Accuracy:F1}%");
-            }
+            _accuracyHistory.Add(stats.Accuracy);
+            DrawChart(stats, ocrResult, groundTruth, hit, i, rounds);
 
 
             SaveStats(stats);
@@ -99,7 +101,105 @@ class Program
             }
         }
 
+        Console.SetCursorPosition(0, ChartRenderLines);
+        Console.ResetColor();
+        Console.WriteLine($"Final: Total={stats.Total}  Correct={stats.Correct}  Wrong={stats.Total - stats.Correct}  Accuracy={stats.Accuracy:F1}%");
+        Console.WriteLine("Done.");
+
         if (_tessEngineLazy.IsValueCreated) _tessEngineLazy.Value.Dispose();
+    }
+
+    static void DrawChart(OcrStats stats, string ocrResult, string groundTruth, bool hit, int round, int totalRounds)
+    {
+        const int chartWidth = 55;
+        const int chartHeight = 10;
+        int rows = chartHeight + 1;
+
+        var grid = new char[rows, chartWidth];
+        for (int y = 0; y < rows; y++)
+        {
+            for (int x = 0; x < chartWidth; x++) grid[y, x] = ' ';
+        }
+
+        for (int i = 0; i < _accuracyHistory.Count; i++)
+        {
+            double acc = Math.Clamp(_accuracyHistory[i], 0, 100);
+            int x = totalRounds <= 1
+                ? 0
+                : (int)Math.Round(i * (chartWidth - 1d) / (totalRounds - 1d));
+            int y = chartHeight - (int)Math.Round(acc / 10.0);
+            y = Math.Clamp(y, 0, chartHeight);
+
+            grid[y, x] = i == _accuracyHistory.Count - 1 ? '█' : '·';
+        }
+
+        static string FrameLine(string content) => $"║{content.PadRight(ChartInnerWidth)}║";
+        static string CenterText(string text)
+        {
+            if (text.Length >= ChartInnerWidth) return text[..ChartInnerWidth];
+            int left = (ChartInnerWidth - text.Length) / 2;
+            return new string(' ', left) + text;
+        }
+
+        var lines = new List<string>
+        {
+            $"╔{new string('═', ChartInnerWidth)}╗",
+            FrameLine(CenterText("OCR CAPTCHA - Độ chính xác theo tiến độ")),
+            $"╠{new string('═', ChartInnerWidth)}╣",
+            FrameLine($"  Round: {round}/{totalRounds}   OCR: \"{ocrResult}\"   Answer: {groundTruth}   {(hit ? "✓" : "✗")}"),
+            FrameLine($"  Correct: {stats.Correct}     Wrong: {stats.Total - stats.Correct}     Accuracy: {stats.Accuracy:F1}%"),
+            $"╠{new string('═', ChartInnerWidth)}╣",
+            FrameLine("")
+        };
+
+        for (int y = 0; y <= chartHeight; y++)
+        {
+            int percent = (chartHeight - y) * 10;
+            var row = new StringBuilder(chartWidth);
+            for (int x = 0; x < chartWidth; x++) row.Append(grid[y, x]);
+            lines.Add(FrameLine($"  {percent,3}%│{row}"));
+        }
+
+        lines.Add(FrameLine($"     └{new string('─', chartWidth)}"));
+
+        var axisLabels = new char[chartWidth + 1];
+        Array.Fill(axisLabels, ' ');
+        string left = "0";
+        string mid = (totalRounds / 2).ToString();
+        string right = totalRounds.ToString();
+        Array.Copy(left.ToCharArray(), 0, axisLabels, 0, left.Length);
+        int midStart = Math.Max(0, (axisLabels.Length / 2) - (mid.Length / 2));
+        Array.Copy(mid.ToCharArray(), 0, axisLabels, midStart, mid.Length);
+        int rightStart = Math.Max(0, axisLabels.Length - right.Length);
+        Array.Copy(right.ToCharArray(), 0, axisLabels, rightStart, right.Length);
+        lines.Add(FrameLine($"      {new string(axisLabels)}"));
+        lines.Add(FrameLine(CenterText("Tiến độ")));
+        lines.Add($"╚{new string('═', ChartInnerWidth)}╝");
+
+        Console.SetCursorPosition(0, 0);
+        Console.OutputEncoding = Encoding.UTF8;
+
+        for (int idx = 0; idx < lines.Count; idx++)
+        {
+            string line = lines[idx];
+            if (idx == 3)
+            {
+                Console.ForegroundColor = hit ? ConsoleColor.Green : ConsoleColor.Red;
+                Console.WriteLine(line);
+                Console.ResetColor();
+                continue;
+            }
+
+            for (int j = 0; j < line.Length; j++)
+            {
+                char c = line[j];
+                if (c == '·' || c == '█') Console.ForegroundColor = ConsoleColor.Cyan;
+                else Console.ResetColor();
+                Console.Write(c);
+            }
+            Console.ResetColor();
+            Console.WriteLine();
+        }
     }
 
     static void ResetSession()
