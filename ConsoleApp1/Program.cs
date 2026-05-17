@@ -126,6 +126,9 @@ class Program
 
     static (string result, Mat processedImage) RecognizeCaptcha(string imagePath)
     {
+        const int    MedianBlurKernelSize = 3;
+        const double MinBlobAreaRatio     = 0.003;
+
         using var blueMask = ExtractBlueText(imagePath);   // white = text
 
         using var dilKernel = Cv2.GetStructuringElement(
@@ -147,9 +150,9 @@ class Program
         Cv2.BitwiseNot(scaled, forOcr);
 
         using var medBlurred = new Mat();
-        Cv2.MedianBlur(forOcr, medBlurred, 3);
+        Cv2.MedianBlur(forOcr, medBlurred, MedianBlurKernelSize);
 
-        using var cleaned = RemoveSmallBlobs(medBlurred, minAreaRatio: 0.003);
+        using var cleaned = RemoveSmallBlobs(medBlurred, minAreaRatio: MinBlobAreaRatio);
 
         string? fullResult = TryFullImageOcr(cleaned);
         if (fullResult != null) return (fullResult, cleaned.Clone());
@@ -308,6 +311,13 @@ class Program
         return result;
     }
 
+    /// <summary>
+    /// Loại bỏ các blob nhỏ bằng cách giữ contour có diện tích lớn hơn ngưỡng tối thiểu.
+    /// Trả về ảnh mới (chữ đen trên nền trắng); caller chịu trách nhiệm Dispose().
+    /// </summary>
+    /// <param name="blackOnWhite">Ảnh đầu vào nhị phân với chữ đen trên nền trắng.</param>
+    /// <param name="minAreaRatio">Tỷ lệ diện tích blob tối thiểu so với tổng diện tích ảnh.</param>
+    /// <returns>Ảnh đã loại bỏ blob nhỏ.</returns>
     static Mat RemoveSmallBlobs(Mat blackOnWhite, double minAreaRatio = 0.003)
     {
         using var inv = new Mat();
