@@ -21,6 +21,7 @@ class Program
         string answerUrl  = $"{baseUrl}/answer";
 
         ResetSession();
+        Directory.CreateDirectory(DenoiseDir);
 
         var stats = LoadStats();
 
@@ -63,7 +64,6 @@ class Program
             var (ocrResult, processedImage) = RecognizeCaptcha("captcha.png");
             using (processedImage)
             {
-                Directory.CreateDirectory(DenoiseDir);
                 string denoiseFile = Path.Combine(DenoiseDir,
                     $"{DateTime.Now:yyyyMMdd_HHmmss_fff}_{groundTruth}.png");
                 Cv2.ImWrite(denoiseFile, processedImage);
