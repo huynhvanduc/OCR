@@ -228,12 +228,25 @@ class Program
     {
         using var blueMask = ExtractBlueText(imagePath);   // white = text
 
-        using var dilKernel = Cv2.GetStructuringElement(
-            MorphShapes.Ellipse, new OpenCvSharp.Size(3, 3));
-        using var dilated = new Mat();
-        Cv2.Dilate(blueMask, dilated, dilKernel);
+        // Step 1: Remove stray pixels not belonging to digit strokes (Opening)
+        using var openKernel = Cv2.GetStructuringElement(
+            MorphShapes.Ellipse, new OpenCvSharp.Size(2, 2));
+        using var opened = new Mat();
+        Cv2.MorphologyEx(blueMask, opened, MorphTypes.Open, openKernel);
 
-        using var deWaved = UndoWaveDistortion(dilated);
+        // Step 2: Bridge gaps caused by horizontal noise lines cutting through digits
+        using var vBridgeKernel = Cv2.GetStructuringElement(
+            MorphShapes.Rect, new OpenCvSharp.Size(1, 5));
+        using var vBridged = new Mat();
+        Cv2.MorphologyEx(opened, vBridged, MorphTypes.Close, vBridgeKernel);
+
+        // Step 3: Bridge gaps caused by vertical noise lines cutting through digits
+        using var hBridgeKernel = Cv2.GetStructuringElement(
+            MorphShapes.Rect, new OpenCvSharp.Size(5, 1));
+        using var bridged = new Mat();
+        Cv2.MorphologyEx(vBridged, bridged, MorphTypes.Close, hBridgeKernel);
+
+        using var deWaved = UndoWaveDistortion(bridged);
 
         const int Scale   = 4;
         int       scaledW = deWaved.Width  * Scale;
@@ -246,10 +259,7 @@ class Program
         using var forOcr = new Mat();
         Cv2.BitwiseNot(scaled, forOcr);
 
-        using var denoised = new Mat();
-        Cv2.MedianBlur(forOcr, denoised, 3);
-
-        using var cleaned = RemoveSmallBlobs(denoised, minAreaRatio: 0.003);
+        using var cleaned = RemoveSmallBlobs(forOcr, minAreaRatio: 0.003);
 
         string? fullResult = TryFullImageOcr(cleaned);
         if (fullResult != null) return (fullResult, cleaned.Clone());
@@ -330,11 +340,7 @@ class Program
 
     static Mat ThickenStrokes(Mat blackOnWhite)
     {
-        using var kernel = Cv2.GetStructuringElement(
-            MorphShapes.Ellipse, new OpenCvSharp.Size(2, 2));
-        var result = new Mat();
-        Cv2.Erode(blackOnWhite, result, kernel);
-        return result;
+        return blackOnWhite.Clone();
     }
 
     static Mat RotateMat(Mat src, float angleDeg)
@@ -366,7 +372,7 @@ class Program
             Cv2.BitwiseAnd(tmp, mB, mask);
 
             using var kernel = Cv2.GetStructuringElement(
-                MorphShapes.Ellipse, new OpenCvSharp.Size(3, 3));
+                MorphShapes.Ellipse, new OpenCvSharp.Size(2, 2));
             Cv2.MorphologyEx(mask, mask, MorphTypes.Close, kernel);
 
             return mask;
