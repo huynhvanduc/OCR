@@ -143,13 +143,18 @@ class Program
         Cv2.Resize(deWaved, scaled, new OpenCvSharp.Size(scaledW, scaledH),
                    interpolation: InterpolationFlags.Nearest);
 
-        var forOcr = new Mat();
+        using var forOcr = new Mat();
         Cv2.BitwiseNot(scaled, forOcr);
 
-        string? fullResult = TryFullImageOcr(forOcr);
-        if (fullResult != null) return (fullResult, forOcr);
+        using var denoised = new Mat();
+        Cv2.MedianBlur(forOcr, denoised, 3);
 
-        return (RecognizePerChar(forOcr, scaledW, scaledH), forOcr);
+        using var cleaned = RemoveSmallBlobs(denoised, minAreaRatio: 0.003);
+
+        string? fullResult = TryFullImageOcr(cleaned);
+        if (fullResult != null) return (fullResult, cleaned.Clone());
+
+        return (RecognizePerChar(cleaned, scaledW, scaledH), cleaned.Clone());
     }
 
     static string? TryFullImageOcr(Mat forOcr)
@@ -301,6 +306,27 @@ class Program
         }
 
         return result;
+    }
+
+    static Mat RemoveSmallBlobs(Mat blackOnWhite, double minAreaRatio = 0.003)
+    {
+        using var inv = new Mat();
+        Cv2.BitwiseNot(blackOnWhite, inv);
+
+        Cv2.FindContours(inv, out var contours, out _,
+            RetrievalModes.External, ContourApproximationModes.ApproxSimple);
+
+        double totalArea = blackOnWhite.Width * blackOnWhite.Height;
+        double minArea   = totalArea * minAreaRatio;
+
+        var cleanMask = new Mat(blackOnWhite.Size(), MatType.CV_8UC1, new Scalar(255));
+        for (int i = 0; i < contours.Length; i++)
+        {
+            if (Cv2.ContourArea(contours[i]) >= minArea)
+                Cv2.DrawContours(cleanMask, contours, i, new Scalar(0), -1);
+        }
+
+        return cleanMask;
     }
 
     static Mat DeskewChar(Mat blackOnWhite)
