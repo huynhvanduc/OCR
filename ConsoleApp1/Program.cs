@@ -8,6 +8,7 @@ class Program
     const string LogFile    = "ocr_log.txt";
     const string CorrectDir = "correct_captchas";
     const string WrongDir   = "wrong_captchas";
+    const string DenoiseDir = "zzz";
     const int    DefaultDpi = 200;
 
     static readonly Lazy<TesseractEngine> _tessEngineLazy = new(CreateTessEngine);
@@ -20,6 +21,7 @@ class Program
         string answerUrl  = $"{baseUrl}/answer";
 
         ResetSession();
+        Directory.CreateDirectory(DenoiseDir);
 
         var stats = LoadStats();
 
@@ -59,8 +61,14 @@ class Program
                 continue;
             }
 
-            string ocrResult = RecognizeCaptcha("captcha.png");
-            bool   hit       = ocrResult == groundTruth;
+            var (ocrResult, processedImage) = RecognizeCaptcha("captcha.png");
+            using (processedImage)
+            {
+                string denoiseFile = Path.Combine(DenoiseDir,
+                    $"{DateTime.Now:yyyyMMdd_HHmmss_fff}_{groundTruth}.png");
+                Cv2.ImWrite(denoiseFile, processedImage);
+            }
+            bool hit = ocrResult == groundTruth;
 
             stats.Total++;
             if (hit) stats.Correct++;
@@ -104,6 +112,10 @@ class Program
             Directory.Delete(WrongDir, recursive: true);
         Directory.CreateDirectory(WrongDir);
 
+        if (Directory.Exists(DenoiseDir))
+            Directory.Delete(DenoiseDir, recursive: true);
+        Directory.CreateDirectory(DenoiseDir);
+
         if (File.Exists(StatsFile))
             File.Delete(StatsFile);
 
@@ -112,7 +124,7 @@ class Program
 
     }
 
-    static string RecognizeCaptcha(string imagePath)
+    static (string result, Mat processedImage) RecognizeCaptcha(string imagePath)
     {
         using var blueMask = ExtractBlueText(imagePath);   // white = text
 
@@ -131,13 +143,13 @@ class Program
         Cv2.Resize(deWaved, scaled, new OpenCvSharp.Size(scaledW, scaledH),
                    interpolation: InterpolationFlags.Nearest);
 
-        using var forOcr = new Mat();
+        var forOcr = new Mat();
         Cv2.BitwiseNot(scaled, forOcr);
 
         string? fullResult = TryFullImageOcr(forOcr);
-        if (fullResult != null) return fullResult;
+        if (fullResult != null) return (fullResult, forOcr);
 
-        return RecognizePerChar(forOcr, scaledW, scaledH);
+        return (RecognizePerChar(forOcr, scaledW, scaledH), forOcr);
     }
 
     static string? TryFullImageOcr(Mat forOcr)
