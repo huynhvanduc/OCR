@@ -329,14 +329,14 @@ class Program
         double totalArea = blackOnWhite.Width * blackOnWhite.Height;
         double minArea   = totalArea * minAreaRatio;
 
-        var cleanMask = new Mat(blackOnWhite.Size(), MatType.CV_8UC1, new Scalar(255));
+        using var cleanMask = new Mat(blackOnWhite.Size(), MatType.CV_8UC1, new Scalar(255));
         for (int contourIndex = 0; contourIndex < contours.Length; contourIndex++)
         {
             if (Cv2.ContourArea(contours[contourIndex]) >= minArea)
                 Cv2.DrawContours(cleanMask, contours, contourIndex, new Scalar(0), -1);
         }
 
-        return cleanMask;
+        return cleanMask.Clone();
     }
 
     static Mat DeskewChar(Mat blackOnWhite)
